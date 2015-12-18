@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"sync"
 
+	"bytes"
+	"encoding/binary"
 	"github.com/blevesearch/bleve/index/store"
 	"github.com/blevesearch/bleve/registry"
 	"github.com/couchbase/goforestdb"
@@ -29,6 +31,7 @@ type Store struct {
 }
 
 func New(mo store.MergeOperator, config map[string]interface{}) (store.KVStore, error) {
+	fmt.Println("creating a new forestdb data pool")
 
 	path, ok := config["path"].(string)
 	if !ok {
@@ -96,6 +99,46 @@ func (s *Store) Writer() (store.KVWriter, error) {
 		store:   s,
 		kvstore: kvstore,
 	}, nil
+}
+
+func (s *Store) Rollback(PartId string, seq uint64) error {
+	kvstore, err := s.kvpool.Get()
+	if err != nil {
+		return err
+	}
+	snInfo, err := kvstore.File().GetAllSnapMarkers()
+	if err != nil {
+		return err
+	}
+	for _, s1 := range snInfo.SnapInfoList() {
+		if s1.GetNumKvsMarkers() != 1 {
+			err = fmt.Errorf("Invalid kvstore with forestdb")
+			break
+		}
+		c := s1.GetKvsCommitMarkers()[0]
+		mk := c.GetSeqNum()
+		dbSnapshot, err := kvstore.SnapshotOpen(mk)
+		if err != nil {
+			continue
+		}
+		res, err := dbSnapshot.GetKV([]byte(PartId))
+		if err != nil {
+			continue
+		}
+		var data uint64
+		buf := bytes.NewReader(res)
+		err = binary.Read(buf, binary.BigEndian, &data)
+		if err != nil {
+			return err
+		}
+		if data < seq {
+			kvstore.Rollback(forestdb.SeqNum(data))
+			return nil
+		}
+		dbSnapshot.Close()
+	}
+	//s.kvpool.Close()
+	return fmt.Errorf("Full rollback is required")
 }
 
 func init() {
