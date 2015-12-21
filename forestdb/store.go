@@ -106,6 +106,7 @@ func (s *Store) Rollback(PartId string, seq uint64) error {
 	if err != nil {
 		return err
 	}
+	defer s.kvpool.Return(kvstore)
 	snInfo, err := kvstore.File().GetAllSnapMarkers()
 	if err != nil {
 		return err
@@ -121,24 +122,37 @@ func (s *Store) Rollback(PartId string, seq uint64) error {
 		if err != nil {
 			continue
 		}
-		res, err := dbSnapshot.GetKV([]byte(PartId))
+		res, err := dbSnapshot.GetKV(GetKey([]byte(PartId)))
 		if err != nil {
+			fmt.Println("Error in getting key", err)
+			dbSnapshot.Close()
 			continue
 		}
 		var data uint64
 		buf := bytes.NewReader(res)
 		err = binary.Read(buf, binary.BigEndian, &data)
 		if err != nil {
+			fmt.Println("got error in reading key", err)
 			return err
 		}
-		if data < seq {
-			kvstore.Rollback(forestdb.SeqNum(data))
+		if data <= seq {
+			err = kvstore.Rollback(mk)
+			if err != nil {
+				fmt.Println("got error in forestdb rollback", err)
+			}
+			dbSnapshot.Close()
 			return nil
 		}
 		dbSnapshot.Close()
 	}
-	//s.kvpool.Close()
 	return fmt.Errorf("Full rollback is required")
+}
+
+func GetKey(partid []byte) []byte {
+	buff := make([]byte, len(partid)+1)
+	buff[0] = 'i'
+	l := copy(buff[1:], partid)
+	return buff[:l+1]
 }
 
 func init() {
